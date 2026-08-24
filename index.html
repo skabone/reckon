@@ -1395,6 +1395,26 @@ function startSession(mode,opts){
   render();
   startTick();
 }
+function holdAfterAnswer(mode,ok,hasNote){ // feedback stays until Next everywhere except the racing modes
+  return !['sprint','survival','tf'].includes(mode)&&(!ok||!!hasNote);
+}
+function advanceQ(){
+  if(!sess||sess.over)return;
+  sess.hold=false;
+  sess.idx++;
+  if(sess.mode==='survival'&&sess.lives<=0){endSession();return;}
+  if(sess.mode==='check'&&sess.chk.i>=SKILL_IDS.length){endSession();return;}
+  if(sess.queue&&sess.idx>=sess.queue.length){endSession();return;}
+  if((sess.mode==='practice'||sess.mode==='trick'||sess.mode==='assess')&&sess.idx>=MODES[sess.mode].len){endSession();return;}
+  if(sess.deadline&&Date.now()>=sess.deadline){endSession();return;}
+  loadQ();renderQuiz();
+}
+function showNext(){
+  sess.hold=true;
+  const row=$('#nextRow');if(row)row.classList.remove('hide');
+  // focus stays on the quiz container — the document keydown handler owns Enter,
+  // and focusing the button would make Enter fire twice (native click + handler)
+}
 function qLimitFor(q){ // survival per-question seconds
   const base=Math.max(5,15-q.lv);
   const speedup=Math.max(.55,1-(sess.correct+sess.wrong)*.015);
@@ -1448,17 +1468,9 @@ function resolveAnswer(val,ok,gaveUp){
     if(ok)Voice.speak(q.tol>0&&val!==q.answer?`Close enough. Exactly ${speakable(String(q.answer))}.`:pick(Math.random,['Correct.','Nice.','Got it.','Clean.']));
     else Voice.speak(`Not quite. The answer is ${speakable(String(q.answer))}. `+(note&&sess.mode!=='survival'?speakable(note.note):''));
   }
+  if(holdAfterAnswer(sess.mode,ok,note)){showNext();return;}
   const wait=ok?600:(note&&sess.mode!=='survival'?(Voice.on?5200:2800):1400);
-  setTimeout(()=>{
-    if(!sess)return;
-    sess.idx++;
-    if(sess.mode==='survival'&&sess.lives<=0){endSession();return;}
-    if(sess.mode==='check'&&sess.chk.i>=SKILL_IDS.length){endSession();return;}
-    if(sess.queue&&sess.idx>=sess.queue.length){endSession();return;}
-    if((sess.mode==='practice'||sess.mode==='trick'||sess.mode==='assess')&&sess.idx>=MODES[sess.mode].len){endSession();return;}
-    if(sess.deadline&&Date.now()>=sess.deadline){endSession();return;}
-    loadQ();renderQuiz();
-  },wait);
+  setTimeout(advanceQ,wait);
 }
 function timeoutQ(){ // survival clock ran out
   if(!sess||sess.lock)return;
@@ -1767,9 +1779,11 @@ function renderQuiz(){
     </div>
     <p class="kbdnote">Keyboard works too: digits, minus, backspace, enter</p>`}
     <div class="idkrow"><button class="listen" id="idkBtn">I don't know &mdash; show me</button></div>
+    <div class="idkrow hide" id="nextRow"><button class="btn primary" id="nextBtn">Next &rarr;<span style="font-weight:500;font-size:12px;opacity:.75">&nbsp;&middot; Enter</span></button></div>
    </div>`;
   $('#quitBtn').addEventListener('click',()=>{sess.idx>0?endSession():quitSession();});
   const ib=$('#idkBtn');if(ib)ib.addEventListener('click',giveUp);
+  const nb=$('#nextBtn');if(nb)nb.addEventListener('click',()=>{if(sess&&sess.hold)advanceQ();});
   if(q.choice){
     $('#choiceBox').addEventListener('click',e=>{const b=e.target.closest('button[data-ch]');if(b)submitChoice(+b.dataset.ch);});
   }else{
@@ -1799,15 +1813,9 @@ function submitChoice(idx){
   if(fb){fb.className='feedback '+(ok?'ok':'no');
     fb.innerHTML=(ok?pick(Math.random,['Right','Exactly','That\'s the one']):gaveUp?'No sweat — it\'s the highlighted one':'Not this time')+(q.note?`<div class="fbnote">${q.note}</div>`:'');}
   if(Voice.on)Voice.speak((ok?'Right. ':'Not quite. ')+(q.note?speakable(q.note):''));
+  if(holdAfterAnswer(sess.mode,ok,q.note)){showNext();return;}
   const wait=ok?(sess.mode==='tf'?650:1500):(Voice.on?5200:sess.mode==='tf'?1900:3000);
-  setTimeout(()=>{
-    if(!sess)return;
-    sess.idx++;
-    if(sess.queue&&sess.idx>=sess.queue.length){endSession();return;}
-    if(sess.mode==='trick'&&sess.idx>=MODES.trick.len){endSession();return;}
-    if(sess.deadline&&Date.now()>=sess.deadline){endSession();return;}
-    loadQ();renderQuiz();
-  },wait);
+  setTimeout(advanceQ,wait);
 }
 function drawBuf(){
   const el=$('#ansLine');if(!el||!sess||sess.lock)return;
@@ -1824,6 +1832,11 @@ function key(k){
 }
 document.addEventListener('keydown',e=>{
   if(!sess||sess.over)return;
+  if(sess.hold){
+    if(e.key==='Enter'||e.key===' '){advanceQ();e.preventDefault();}
+    else if(e.key==='Escape')quitSession();
+    return;
+  }
   if(sess.q&&sess.q.choice){
     if(sess.q.wide&&/^[tf]$/i.test(e.key)){submitChoice(e.key.toLowerCase()==='t'?0:1);e.preventDefault();}
     else if(e.key>='1'&&e.key<=String(sess.q.choices.length)){submitChoice(+e.key-1);e.preventDefault();}
