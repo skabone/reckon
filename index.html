@@ -630,7 +630,12 @@ function ladderReady(id){ // form at the current level: last 10 level-tagged ans
   return {n:rec.length,ok,ready:rec.length>=8&&ok/rec.length>=.7};
 }
 function bandUnlocked(b){return b===0||!!(S.units[b-1]&&S.units[b-1].passed);}
-function buildLevelTest(skill,lv){return Array.from({length:10},()=>makeQ(skill,lv,Math.random));}
+function buildLevelTest(skill,lv){
+  const qs=Array.from({length:10},()=>makeQ(skill,lv,Math.random));
+  const vq=typeof makeVocabQ==='function'?makeVocabQ(LESSONS.filter(l=>l.skill===skill&&l.lv<=lv)):null;
+  if(vq)qs[ri(Math.random,0,9)]=vq; // one slot is vocabulary — knowing the words is part of the level
+  return qs;
+}
 function applyLevelTest(skill,lv,correct){ // pass 8/10 at your frontier level → next level unlocks
   const l=lad(skill);
   const passed=correct>=8;
@@ -1195,6 +1200,85 @@ const LESSON_EXTRA={
  tries:[{t:'digit-sum residue of 583',a:7},{t:'digit-sum residue of 2,687',a:5}]}
 };
 LESSONS.forEach(l=>Object.assign(l,LESSON_EXTRA[l.id]||{}));
+/* ================= vocabulary: every lesson teaches its words, in the register of the grade that learns it.
+   Band 0 speaks to a grade-schooler, band 3 to a high-schooler. These feed the Words card, unit tests, and level tests. ================= */
+const LESSON_VOCAB={
+'ltr-add':[
+ {t:'sum',d:'The answer you get when you add numbers together. In 47 + 38 = 85, the sum is 85.'},
+ {t:'place value',d:'What a digit is worth because of where it sits. In 47, the 4 is not four — it is four TENS, worth 40. Left-to-right addition works because you add the big place values first.'},
+ {t:'commutative property',d:'A fancy name for a simple fact: you can add numbers in any order and the answer does not change. 3 + 5 and 5 + 3 both make 8. "Commute" means to move around — the numbers may trade places.'},
+ {t:'associative property',d:'When you add three or more numbers, you may group them any way you like. (2 + 8) + 5 and 2 + (8 + 5) both make 15 — so group the friendly pair first.'}],
+'complements':[
+ {t:'complement',d:'The number that fills another number up to a round target. 68 needs 32 to reach 100, so 32 is the complement of 68.'},
+ {t:'round number',d:'A number that ends in zero, like 10, 50, or 100. Round numbers are easy to add and subtract with — that is why every trick aims at them.'},
+ {t:'digit',d:'One of the ten symbols 0 through 9 that numbers are written with. In 68, the digits are 6 and 8 — and complement pairs work digit by digit: tens add to 9, ones add to 10.'}],
+'add-up-sub':[
+ {t:'difference',d:'The answer to a subtraction — how far apart two numbers are. The difference between 83 and 47 is 36.'},
+ {t:'inverse operations',d:'Operations that undo each other. Subtraction undoes addition — which is why you can answer 83 − 47 by asking "what do I ADD to 47 to reach 83?"'},
+ {t:'number line',d:'A picture of the numbers laid out on a line. Counting up from 47 to 83 is walking that line in easy hops: +3 to 50, then +33.'}],
+'round-adjust':[
+ {t:'rounding',d:'Nudging a number to the nearest friendly one — 98 rounds to 100. Here you round to make the arithmetic easy, then fix the small difference, so the final answer is still exact.'},
+ {t:'compensate',d:'To pay back what your rounding changed. Subtract 100 instead of 98 and you took 2 too many — so compensate: give 2 back. The correction always goes opposite to the rounding.'},
+ {t:'estimate vs. exact',d:'An estimate is deliberately close; exact is the true answer. Round-and-adjust produces an EXACT answer — the rounding is temporary and always repaid.'}],
+'times5':[
+ {t:'factor',d:'A number being multiplied. In 86 × 5, both 86 and 5 are factors.'},
+ {t:'product',d:'The answer of a multiplication. The product of 86 and 5 is 430.'},
+ {t:'halving',d:'Dividing by 2. It is the partner move to ×10 in this trick: ×5 equals ×10 then halve, because 5 is half of 10. Same idea: ×25 is ×100 then quarter.'}],
+'times9-11':[
+ {t:'multiple',d:'What you get by multiplying a number by 1, 2, 3, and so on. The multiples of 9 are 9, 18, 27, … — and every one of them is a multiple of 10 minus something.'},
+ {t:'carry',d:'When a column passes 9, the extra moves one place left. In 78 × 11 the digit sum 7 + 8 = 15 spills over: the answer is 858, not 7-15-8.'},
+ {t:'expanding',d:'Rewriting a number as round-plus-small pieces: 9 = 10 − 1, 11 = 10 + 1. Expanding one factor is what turns ×9 and ×11 into a shift and one addition.'}],
+'double-half':[
+ {t:'even number',d:'A number that splits into two equal whole halves — it ends in 0, 2, 4, 6, or 8. Halving only stays whole while the factor is even, so evenness is the fuel of this trick.'},
+ {t:'power of 2',d:'A number built only from doublings: 2, 4, 8, 16, 32… A power-of-2 factor melts away completely under repeated halving — the ideal case.'},
+ {t:'conserved',d:'Something that stays the same while other things change. Trading a ×2 between the factors reshapes the multiplication, but the product is conserved — that is the whole guarantee.'}],
+'distribute':[
+ {t:'distributive property',d:'Multiplication spreads over addition: a × (b + c) = a×b + a×c. Seven rows of 98 is seven rows of 100 minus seven rows of 2 — the property drawn as a picture.'},
+ {t:'expression',d:'A math phrase, like 7 × 98. Mental math is largely the art of rewriting an expression into an easier one that is worth exactly the same.'},
+ {t:'term',d:'Each piece of a sum. In 700 − 14, the terms are 700 and 14 — you engineered the split so every term is easy.'}],
+'pct-blocks':[
+ {t:'percent',d:'Per hundred. 15% means 15 out of every 100 — so 15% of a number is 15 hundredths of it. That single sentence is the whole subject.'},
+ {t:'base',d:'The number you are taking the percent OF. In 15% of 240, the base is 240. 10% of the base is one decimal shift; 1% is two.'},
+ {t:'symmetry (of percents)',d:'8% of 25 equals 25% of 8, because both are 8 × 25 ÷ 100. The two numbers can swap jobs — flip whenever the flipped version is friendlier.'}],
+'sq-ends5':[
+ {t:'square',d:'A number times itself: 65² means 65 × 65. It is called a square because it is the area of a square with that side length.'},
+ {t:'units digit',d:'The last digit of a number — the ones place. A number ends in 5 exactly when its units digit is 5, and that is the condition that unlocks this shortcut.'},
+ {t:'binomial',d:'A two-part expression like (10n + 5). Squaring that binomial — and watching the cross-terms collect into 100·n(n+1) — is where the append-25 pattern comes from.'}],
+'diff-squares':[
+ {t:'difference of squares',d:'The identity (m − k)(m + k) = m² − k². The cross-terms +mk and −mk annihilate each other, leaving only the two squares.'},
+ {t:'midpoint',d:'The number halfway between two others. 23 and 17 straddle the midpoint 20 at equal distance — square the midpoint, subtract the square of the gap.'},
+ {t:'identity',d:'An equation that is true for EVERY value you plug in — not sometimes, always. That is why this trick can never fail when the setup is right.'}],
+'near100':[
+ {t:'deficit',d:'How far below 100 a factor sits. 97 has a deficit of 3; 94 has a deficit of 6. The whole method runs on the deficits instead of the numbers.'},
+ {t:'cross-subtraction',d:'Subtracting one factor’s deficit from the OTHER factor: 97 − 6 = 94 − 3 = 91. Both routes agree because both equal 100 minus both deficits.'}],
+'factor-div':[
+ {t:'divisor',d:'The number you are dividing BY. In 432 ÷ 12, the divisor is 12.'},
+ {t:'quotient',d:'The answer of a division. 432 ÷ 12 has quotient 36. Staging the division does not change the quotient — that is the point.'},
+ {t:'factoring',d:'Breaking a number into whole numbers that multiply back to it: 12 = 4 × 3. Factor the divisor and one hard division becomes two table-sized ones.'}],
+'frac-pct':[
+ {t:'numerator',d:'The top of a fraction — how many parts you have. In 7/20 it is 7.'},
+ {t:'denominator',d:'The bottom of a fraction — how many equal parts make one whole. In 7/20 it is 20. The fluent denominators are the ones that divide 100 cleanly.'},
+ {t:'equivalent fractions',d:'Different-looking fractions worth the same amount: 7/20 = 35/100. And a denominator of 100 IS a percent — that equivalence is the conversion.'}],
+'divisibility':[
+ {t:'divisible',d:'A number is divisible by d when dividing by d leaves nothing over. 741 is divisible by 3; 742 is not.'},
+ {t:'remainder',d:'What is left after dividing whole numbers: 14 ÷ 4 is 3 remainder 2. Divisibility rules are really fast remainder-spotting rules.'},
+ {t:'digit sum',d:'Add a number’s digits: 741 → 7 + 4 + 1 = 12. For 3 and 9 the digit sum keeps the original number’s remainder — that is the entire rule.'}],
+'estimation':[
+ {t:'relative error',d:'Error measured as a fraction of the true value, not a raw amount. Off by 100 on 4,000 is 2.5% relative error — the number that matters when errors multiply.'},
+ {t:'bias',d:'A systematic lean in one direction. Round both factors up and the estimate is biased high; round them in opposite directions and the biases partly cancel.'},
+ {t:'error bound',d:'A promise about how far off you can be — "within 5%". Estimating with an error bound is a skill; guessing without one is a shrug.'}],
+'sq-near50-100':[
+ {t:'anchor',d:'A friendly reference you compute FROM instead of starting from scratch — here 50 and 100, whose squares you own cold.'},
+ {t:'cross-term',d:'The middle term 2ab in (a + b)² = a² + 2ab + b². The anchors are chosen precisely so the cross-term (100k near 50, 200k near 100) lands on round hundreds.'}],
+'sq-any':[
+ {t:'slide',d:'Moving n up by k and down by k to hit round ground: 67 slides to 70 and 64. The slid pair multiplies easily — and misses the true square by exactly k².'},
+ {t:'correction term',d:'The k² you must add back after sliding, because n² = (n + k)(n − k) + k². The slide always undershoots by precisely that square — never forget to pay it.'}],
+'cast9':[
+ {t:'residue (mod 9)',d:'What a number leaves behind on division by 9 — reachable by collapsing its digit sum: 347 → 14 → 5. A number and its digit sum always share a residue.'},
+ {t:'checksum',d:'A small fingerprint computed from data to catch errors — the same idea barcodes and card numbers use. Casting out nines is a checksum for your own arithmetic.'},
+ {t:'congruent',d:'Two numbers are congruent mod 9 when they leave the same remainder. Congruence survives adding and multiplying — which is why the shadow calculation must agree with the real one.'}]
+};
+LESSONS.forEach(l=>{l.vocab=LESSON_VOCAB[l.id]||[];});
 /* ================= session engine ================= */
 let sess=null, ui={tab:'train',lesson:null}, tickHandle=null;
 const MODES={
@@ -1222,6 +1306,9 @@ function ratingNow(){
 const AGE_BANDS={'10-13':700,'14-17':850,'18-24':1000,'25-44':980,'45-64':930,'65+':880};
 const REF_BANDS=[['Typical adult',950],['STEM graduate',1150],['Mental-math hobbyist',1400],['Competition level',2000]];
 function pctile(r,mid){return Math.max(1,Math.min(99,Math.round(100/(1+Math.exp(-(r-mid)/260)))));}
+function pctLabel(p){ // say it plainly: where a percentile actually puts you
+  return p>=95?'top 5%':p>=90?'top 10%':p>=75?'top quarter':p>=55?'upper half':p>45?'middle of the pack':p>=25?'lower half':p>=10?'bottom quarter':'bottom 10%';
+}
 function stageFor(lv){
   return lv<=2?'Grades 2–3 arithmetic':lv<=4?'Grades 4–5 arithmetic':lv<=6?'Grades 6–7 (fractions & percents)':lv<=8?'Grades 8–9 (pre-algebra fluency)':lv<=10?'College-ready fluency':'Competition-level fluency';
 }
@@ -1304,6 +1391,17 @@ function makeGRE(){
   const b=R(4,25)*4;const av=b/4;
   return {skill:'pct',lv:6,choice:true,word:1,text:qcomp(`25% of ${fmt(b)}`,`${fmt(b)} &divide; 4`),choices:GRE_OPTS,correct:2,note:`25% IS a quarter — the two expressions are identical: ${fmt(av)}. GRE comparisons love disguised equalities.`};
 }
+function makeVocabQ(pool){ // the words gate progress too: term -> pick its definition
+  const withV=(pool||LESSONS).filter(l=>l.vocab&&l.vocab.length);
+  if(!withV.length)return null;
+  const les=pick(Math.random,withV);
+  const v=pick(Math.random,les.vocab);
+  const others=shuffleArr(LESSONS.flatMap(l=>l.vocab||[]).filter(x=>x.t!==v.t&&x.d!==v.d)).slice(0,2);
+  const opts=shuffleArr([v.d,...others.map(x=>x.d)]);
+  return {skill:les.skill,lv:les.lv,choice:true,word:1,vocab:1,lessonId:les.id,hint:'Vocabulary',
+    text:`Vocabulary — from &ldquo;${les.title}&rdquo;: what does <b>${esc(v.t)}</b> mean?`,
+    choices:opts,correct:opts.indexOf(v.d),note:`${v.t} — ${v.d}`};
+}
 function buildUnitTest(band){
   const ls=LESSONS.filter(l=>l.band===band);
   const queue=ls.map(l=>makeQ(l.skill,Math.min(12,l.lv),Math.random));
@@ -1311,6 +1409,10 @@ function buildUnitTest(band){
     const c=pick(Math.random,l.checks);
     queue.push({skill:l.skill,lv:l.lv,choice:true,word:1,text:c.q,choices:c.opts,correct:c.a,note:c.why,hint:'Concept check'});
   });
+  const v1=makeVocabQ(ls);
+  let v2=makeVocabQ(ls);
+  if(v1&&v2&&v2.text===v1.text)v2=makeVocabQ(ls);
+  [v1,v2].forEach(v=>{if(v)queue.push(v);});
   return shuffleArr(queue);
 }
 function makeTF(){
@@ -1619,9 +1721,9 @@ function renderProfile(){
     <div class="card chartcard">
       <h3>Where you stand</h3>
       <p class="note">Calibrated estimates — not a live leaderboard</p>
-      <div class="pctrow"><span class="who">vs typical adults</span><span class="val">~${pctile(r,950)}th percentile</span></div>
-      <div class="pctrow"><span class="who">${p.age?'vs typical ages '+p.age:'vs your age band (set it above)'}</span><span class="val">${p.age?'~'+pctile(r,ageMid)+'th percentile':'—'}</span></div>
-      <div class="pctrow"><span class="who">vs STEM graduates</span><span class="val">~${pctile(r,1150)}th percentile</span></div>
+      <div class="pctrow"><span class="who">vs typical adults</span><span class="val">~${pctile(r,950)}th &middot; ${pctLabel(pctile(r,950))}</span></div>
+      <div class="pctrow"><span class="who">${p.age?'vs typical ages '+p.age:'vs your age band (set it above)'}</span><span class="val">${p.age?'~'+pctile(r,ageMid)+'th &middot; '+pctLabel(pctile(r,ageMid)):'—'}</span></div>
+      <div class="pctrow"><span class="who">vs STEM graduates</span><span class="val">~${pctile(r,1150)}th &middot; ${pctLabel(pctile(r,1150))}</span></div>
       ${(()=>{const eq=equivalents(r);return `
       <div class="pctrow"><span class="who">Knowledge stage</span><span class="val" style="font-family:inherit;font-size:13.5px">${eq.stage}</span></div>
       <div class="pctrow"><span class="who">SAT math est. (fluency part)</span><span class="val">&asymp; ${eq.sat[0]}&ndash;${eq.sat[1]}</span></div>
@@ -1779,11 +1881,11 @@ function renderQuiz(){
     </div>
     <p class="kbdnote">Keyboard works too: digits, minus, backspace, enter</p>`}
     <div class="idkrow"><button class="listen" id="idkBtn">I don't know &mdash; show me</button></div>
-    <div class="idkrow hide" id="nextRow"><button class="btn primary" id="nextBtn">Next &rarr;<span style="font-weight:500;font-size:12px;opacity:.75">&nbsp;&middot; Enter</span></button></div>
+    <div class="idkrow hide" id="nextRow"><button class="btn primary" id="qNextBtn">Next &rarr;<span style="font-weight:500;font-size:12px;opacity:.75">&nbsp;&middot; Enter</span></button></div>
    </div>`;
   $('#quitBtn').addEventListener('click',()=>{sess.idx>0?endSession():quitSession();});
   const ib=$('#idkBtn');if(ib)ib.addEventListener('click',giveUp);
-  const nb=$('#nextBtn');if(nb)nb.addEventListener('click',()=>{if(sess&&sess.hold)advanceQ();});
+  const nb=$('#qNextBtn');if(nb)nb.addEventListener('click',()=>{if(sess&&sess.hold)advanceQ();});
   if(q.choice){
     $('#choiceBox').addEventListener('click',e=>{const b=e.target.closest('button[data-ch]');if(b)submitChoice(+b.dataset.ch);});
   }else{
@@ -1861,7 +1963,7 @@ function assessReportHTML(d){
     <div class="eyebrow" style="margin:16px 0 6px;display:block">Standardized read</div>
     ${d.dLvl?`<div class="prow"><span class="nm">Demonstrated level (adaptive)</span><span class="rv mono">L${d.dLvl.toFixed(1)} avg &middot; climbed to L${d.maxLv}</span></div>`:''}
     <div class="prow"><span class="nm">Knowledge stage</span><span class="rv">${stage}</span></div>
-    <div class="prow"><span class="nm">Percentile ${S.profile.age?'(ages '+S.profile.age+')':'(typical adults)'}</span><span class="rv mono">~${pctile(d.rating,ageMid)}th</span></div>
+    <div class="prow"><span class="nm">Percentile ${S.profile.age?'(ages '+S.profile.age+')':'(typical adults)'}</span><span class="rv mono">~${pctile(d.rating,ageMid)}th &middot; ${pctLabel(pctile(d.rating,ageMid))}</span></div>
     <div class="prow"><span class="nm">SAT math, fluency component</span><span class="rv mono">&asymp; ${eq.sat[0]}&ndash;${eq.sat[1]}</span></div>
     <div class="prow"><span class="nm">GRE quant, fluency component</span><span class="rv mono">&asymp; ${eq.gre[0]}&ndash;${eq.gre[1]}</span></div>
     <div class="prow"><span class="nm">ACT math, fluency component</span><span class="rv mono">&asymp; ${eq.act[0]}&ndash;${eq.act[1]}</span></div>
@@ -1961,7 +2063,7 @@ function renderResults(){
                  `${d.correct} / ${n||MODES[d.mode]?.len||n}`;
   const sub=d.mode==='sat'?`SAT-style section score (unofficial) · ${d.correct}/${n} correct`:
             d.mode==='gre'?`GRE-style quant score (unofficial, 130–170 scale) · ${d.correct}/${n} correct`:
-            d.mode==='assess'?`Reckon rating from what you demonstrated · ~${pctile(d.rating,ageMid)}th percentile ${S.profile.age?'for ages '+S.profile.age:'vs typical adults'} (calibrated estimate)`:
+            d.mode==='assess'?`Reckon rating from what you demonstrated · ~${pctile(d.rating,ageMid)}th percentile — ${pctLabel(pctile(d.rating,ageMid))} ${S.profile.age?'for ages '+S.profile.age:'vs typical adults'} (calibrated estimate)`:
             d.mode==='unit'?(d.unitPassed?(d.newUnlock?`Passed — Unit ${d.unit+2} unlocked`:'Passed'):`${acc}% — you need 80%. Review the misses, then retake.`):
             d.mode==='ltest'?(d.ltPassed?(d.ltUnlocked?`Passed — ${SKILLS[d.ltest.skill].name} Level ${d.ltUnlocked} unlocked`:`Passed — Level ${d.ltest.lv} confirmed`):`${d.correct}/10 — the bar is 8. Walk the review, practice the technique, then retake.`):
             d.newBest?'New personal best':
@@ -2071,7 +2173,9 @@ function renderLearn(){
   }));
 }
 function lessonCards(l){
-  const cards=[{k:'intro'},{k:'see'}];
+  const cards=[{k:'intro'}];
+  if(l.vocab&&l.vocab.length)cards.push({k:'words'});
+  cards.push({k:'see'});
   if(l.why)cards.push({k:'why'});
   (l.checks||[]).forEach((_,i)=>cards.push({k:'check',i}));
   (l.tries||[]).forEach((_,i)=>cards.push({k:'try',i}));
@@ -2088,6 +2192,11 @@ function renderLesson(id){
   if(card.k==='intro'){
     inner=`<div class="ptype t-concept">Concept &middot; ${SKILLS[l.skill].name} &middot; ${BAND_NAMES[l.band]}</div><h2>${l.title}</h2><p class="gist">${l.gist}</p><div class="body">${l.body}</div>`;
     speech=l.title+'. '+l.gist+' '+l.body;
+  }else if(card.k==='words'){
+    inner=`<div class="ptype t-concept">Words to know</div><h2>Speak the language first</h2>
+      <p class="gist">These words appear in this lesson — and in the unit test and level tests, because knowing what things are called is part of knowing them.</p>
+      <div class="body">${l.vocab.map(w=>`<p><strong>${esc(w.t)}</strong> — ${w.d}</p>`).join('')}</div>`;
+    speech='Words to know. '+l.vocab.map(w=>w.t+'. '+w.d).join(' Next word: ');
   }else if(card.k==='see'){
     inner=`<div class="ptype t-concept">See it</div><h2>The picture</h2>${LVIZ[l.id]?`<div class="vizwrap">${LVIZ[l.id]()}</div>`:''}<div class="worked"><span class="eyebrow">Worked example</span><div class="steps">${l.worked.join('<br>')}</div></div>`;
     speech='The picture. Worked example: '+l.worked.join('. ');
