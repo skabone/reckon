@@ -6,7 +6,7 @@
 <title>Reckon</title>
 <meta name="description" content="Mental math, trained like a sport — a per-skill ladder with placement, level tests, lessons, and an honest coach.">
 <meta name="app-build" content="2026-09-17">
-<meta name="app-build-id" content="2026-09-17.0a54858">
+<meta name="app-build-id" content="2026-09-17.4aae7df">
 <meta name="theme-color" content="#F9F9F6" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#10141D" media="(prefers-color-scheme: dark)">
 <link rel="manifest" href="manifest.webmanifest">
@@ -478,8 +478,8 @@ canvas.confetti{position:fixed;inset:0;pointer-events:none;z-index:98}
 /* ================= storage ================= */
 // S.v stays 1 so an older cached build can still read the store; S.sv is the schema version migrations move.
 const KEY='reckon.v1',SNAP_KEY='reckon.snaps',QUAR_KEY='reckon.quarantine',PREMIG_KEY='reckon.premigrate';
-const BUILD='2026-09-17.0a54858'; // ship.sh stamps date + content hash here
-const STORE_SV=2,SNAP_MAX=5,QUAR_MAX=3;
+const BUILD='2026-09-17.4aae7df'; // ship.sh stamps date + content hash here
+const STORE_SV=3,SNAP_MAX=5,QUAR_MAX=3;
 const SKILL_IDS=['add','sub','mul','div','pct','sq','frac','est'];
 const SKILLS={
   add:{name:'Addition'}, sub:{name:'Subtraction'}, mul:{name:'Multiplication'}, div:{name:'Division'},
@@ -489,7 +489,7 @@ function freshState(tk){
   const sk={}; SKILL_IDS.forEach(id=>sk[id]={lv:1,xp:0});
   return {v:1,sv:STORE_SV,skills:sk,hist:[],agg:{},days:{},streak:{last:'',n:0},bestSprint:0,bestSurvival:0,
           daily:{},lessons:{},totals:{n:0,ok:0},sel:SKILL_IDS.slice(),lastCheck:'',
-          units:{},tests:{},rhist:[],ladder:{},study:{},profile:{name:'',age:'',occ:'',created:tk||todayKey()}};
+          units:{},tests:{},rhist:[],ladder:{},study:{},rq:[],profile:{name:'',age:'',occ:'',created:tk||todayKey()}};
 }
 // daily aggregates outlive the 1000-row history cap: per day n/ok/ms, per skill [n,ok], per mode n
 function aggAdd(agg,day,h){
@@ -497,6 +497,33 @@ function aggAdd(agg,day,h){
   a.n++;a.ok+=h.ok?1:0;a.ms+=h.ms||0;
   const k=a.s[h.s]||(a.s[h.s]=[0,0]);k[0]++;k[1]+=h.ok?1:0;
   if(h.m){a.m=a.m||{};a.m[h.m]=(a.m[h.m]||0)+1;}
+}
+// Review queue: a missed problem comes back after 1, 3, 7, 16 and 35 days; a miss sends it back to the start and
+// a right answer at the last step retires it. Pure in (rq, now) — due times are local midnights, so "tomorrow"
+// means the next calendar day, not 24 hours on. Items are {s, lv, d, box, due, added, n}.
+const RQ_STEPS=[1,3,7,16,35],RQ_MAX=200,RQ_ROUND=10;
+const RQ_MODES=['practice','sprint','survival','daily','drill','unit','ltest']; // not check/assess: they probe above your level on purpose
+function rqKey(s,d){return s+'|'+Object.keys(d).sort().map(k=>k+':'+d[k]).join(',');}
+function dayAfter(now,n){const t=new Date(now);return new Date(t.getFullYear(),t.getMonth(),t.getDate()+n).getTime();}
+function rqAdd(rq,it,now){
+  const k=rqKey(it.s,it.d),due=dayAfter(now,RQ_STEPS[0]),at=rq.findIndex(x=>rqKey(x.s,x.d)===k);
+  const out=rq.slice();
+  if(at>=0)out[at]=Object.assign({},rq[at],{box:0,due});
+  else out.push({s:it.s,lv:it.lv,d:Object.assign({},it.d),box:0,due,added:now,n:0});
+  while(out.length>RQ_MAX){ // full: let go of the best-known item, oldest first
+    let drop=0;out.forEach((x,i)=>{if(x.box>out[drop].box||(x.box===out[drop].box&&x.added<out[drop].added))drop=i;});
+    out.splice(drop,1);
+  }
+  return out;
+}
+function rqDue(rq,now){return rq.filter(x=>x.due<=now).sort((a,b)=>a.due-b.due||a.box-b.box||a.added-b.added);}
+function rqNextDue(rq){return rq.length?Math.min(...rq.map(x=>x.due)):null;}
+function rqAnswer(rq,k,ok,now){
+  return rq.map(x=>{
+    if(rqKey(x.s,x.d)!==k)return x;
+    const box=ok?x.box+1:0;
+    return box>=RQ_STEPS.length?null:Object.assign({},x,{box,due:dayAfter(now,RQ_STEPS[box]),n:(x.n||0)+1,last:now});
+  }).filter(Boolean);
 }
 // MIGRATIONS[n] takes schema n to n+1. Pure: each works on the copy migrate() hands it.
 const MIGRATIONS=[
@@ -508,6 +535,12 @@ const MIGRATIONS=[
     return s;},
   s=>{ // 1 → 2: daily aggregates, backfilled from the history that survives
     s.agg={};(s.hist||[]).forEach(h=>aggAdd(s.agg,dayKey(new Date(h.t)),h));
+    return s;},
+  s=>{ // 2 → 3: review queue, seeded from the misses whose operands history still holds (only generated questions carry d)
+    s.rq=[];
+    (s.hist||[]).forEach(h=>{
+      if(!h.ok&&h.d&&typeof h.d==='object'&&RQ_MODES.includes(h.m)&&SKILL_IDS.includes(h.s)&&Number.isInteger(h.lv)&&h.lv>=1&&h.lv<=12)
+        s.rq=rqAdd(s.rq,{s:h.s,lv:h.lv,d:h.d},h.t);});
     return s;}
 ];
 function migrate(s,tk){
@@ -528,7 +561,8 @@ function validateState(s){
   if(!obj(s.totals)||!num(s.totals.n)||!num(s.totals.ok)||s.totals.ok>s.totals.n)er.push('totals invalid');
   if(!obj(s.streak)||typeof s.streak.last!=='string'||!num(s.streak.n))er.push('streak invalid');
   ['days','daily','lessons','units','tests','ladder','study','agg','profile'].forEach(k=>{if(s[k]!==undefined&&!obj(s[k]))er.push(k+' is not an object');});
-  ['rhist','sel'].forEach(k=>{if(s[k]!==undefined&&!Array.isArray(s[k]))er.push(k+' is not a list');});
+  ['rhist','sel','rq'].forEach(k=>{if(s[k]!==undefined&&!Array.isArray(s[k]))er.push(k+' is not a list');});
+  if(Array.isArray(s.rq)&&s.rq.some(x=>!obj(x)||!SKILL_IDS.includes(x.s)||!Number.isInteger(x.lv)||x.lv<1||x.lv>12||!obj(x.d)||!Number.isInteger(x.box)||x.box<0||x.box>=RQ_STEPS.length||!num(x.due)))er.push('rq has a malformed item');
   return er;
 }
 function readList(st,key){try{const a=JSON.parse(st.getItem(key)||'[]');return Array.isArray(a)?a:[];}catch(e){return [];}}
@@ -636,6 +670,28 @@ function fmt(n){return n.toLocaleString('en-US');}
 /* ================= question generators ================= */
 function q(skill,lv,text,answer,opts){return Object.assign({skill,lv,text,answer,tol:0,hint:''},opts||{});}
 const OP={plus:'<span class="op">+</span>',minus:'<span class="op">&minus;</span>',times:'<span class="op">&times;</span>',div:'<span class="op">&divide;</span>'};
+// FROM_D[skill](lv, d) is the one place a question is built from its operands: generators only pick the
+// numbers, and the review queue replays a missed problem from the operands it stored.
+const FROM_D={
+  add:(lv,d)=>q('add',lv,d.c==null?`${d.a} ${OP.plus} ${d.b}`:`${d.a} ${OP.plus} ${d.b} ${OP.plus} ${d.c}`,d.a+d.b+(d.c||0),{d}),
+  sub:(lv,d)=>q('sub',lv,`${d.a} ${OP.minus} ${d.b}`,d.a-d.b,{d}),
+  mul:(lv,d)=>q('mul',lv,`${d.a} ${OP.times} ${d.b}`,d.a*d.b,{d}),
+  div:(lv,d)=>q('div',lv,`${fmt(d.a)} ${OP.div} ${d.b}`,d.a/d.b,{d}),
+  pct:(lv,d)=>q('pct',lv,`${d.p}% of ${fmt(d.base)}`,d.p*d.base/100,{d}),
+  sq:(lv,d)=>d.r!==undefined
+    ?q('sq',lv,`&radic;<span style="border-top:2px solid var(--accent);padding:0 4px">${d.r*d.r}</span>`,d.r,{hint:'Which number squared gives this?',d})
+    :q('sq',lv,`${d.n}<sup style="font-size:.55em;color:var(--accent)">2</sup>`,d.n*d.n,{d}),
+  frac:(lv,d)=>d.kind==='pct'
+    ?q('frac',lv,`<span style="color:var(--accent)">${d.n}/${d.den}</span> as a percent`,100*d.n/d.den,{hint:'Answer in %',d})
+    :q('frac',lv,`<span style="color:var(--accent)">${d.n}/${d.den}</span> of ${fmt(d.base)}`,d.n*d.mult,{d}),
+  est:(lv,d)=>{const tol=lv<=3?.15:lv<=6?.10:lv<=9?.08:.05;
+    return q('est',lv,`${d.a} ${OP.times} ${d.b} &asymp; ?`,d.a*d.b,{tol,hint:`Estimate — within ${Math.round(tol*100)}% counts`,d});}
+};
+function rebuildQ(skill,lv,d){ // pure; null when the stored operands can't make a whole-number question
+  if(!FROM_D[skill]||!d||typeof d!=='object'||!Number.isInteger(lv)||lv<1||lv>12)return null;
+  const out=FROM_D[skill](lv,Object.assign({},d));
+  return Number.isInteger(out.answer)?out:null;
+}
 const GEN={
   add(rng,lv){
     let a,b,c=null;
@@ -651,8 +707,7 @@ const GEN={
     else if(lv<=10){a=ri(rng,1100,9899);b=ri(rng,1100,9899);}
     else if(lv<=11){a=ri(rng,110,999);b=ri(rng,110,999);c=ri(rng,110,999);}
     else {a=ri(rng,11000,98999);b=ri(rng,11000,98999);}
-    const text=c===null?`${a} ${OP.plus} ${b}`:`${a} ${OP.plus} ${b} ${OP.plus} ${c}`;
-    return q('add',lv,text,a+b+(c||0),{d:{a,b,c}});
+    return FROM_D.add(lv,{a,b,c});
   },
   sub(rng,lv){
     let a,b;
@@ -668,7 +723,7 @@ const GEN={
     else if(lv<=10){a=ri(rng,10000,99999);b=ri(rng,1000,9999);}
     else if(lv<=11){b=ri(rng,1000,9999);a=ri(rng,200,b-100);}
     else {a=ri(rng,10000,99999);b=ri(rng,10000,99999);}
-    return q('sub',lv,`${a} ${OP.minus} ${b}`,a-b,{d:{a,b}});
+    return FROM_D.sub(lv,{a,b});
   },
   mul(rng,lv){
     let a,b;
@@ -684,7 +739,7 @@ const GEN={
     else if(lv<=10){a=ri(rng,23,99);b=ri(rng,23,99);}
     else if(lv<=11){a=ri(rng,110,499);b=ri(rng,11,29);}
     else {a=ri(rng,110,999);b=ri(rng,21,99);}
-    return q('mul',lv,`${a} ${OP.times} ${b}`,a*b,{d:{a,b}});
+    return FROM_D.mul(lv,{a,b});
   },
   div(rng,lv){
     let d,ans;
@@ -694,7 +749,7 @@ const GEN={
     else if(lv<=8){d=ri(rng,4,12);ans=ri(rng,21,99);}
     else if(lv<=10){d=ri(rng,11,25);ans=ri(rng,11,49);}
     else {d=ri(rng,12,49);ans=ri(rng,21,99);}
-    return q('div',lv,`${fmt(d*ans)} ${OP.div} ${d}`,ans,{d:{a:d*ans,b:d}});
+    return FROM_D.div(lv,{a:d*ans,b:d});
   },
   pct(rng,lv){
     let p,base;
@@ -704,14 +759,14 @@ const GEN={
     else if(lv<=8){p=pick(rng,[4,12,15,35,60,85]);base=p%4?ri(rng,2,50)*20:ri(rng,2,40)*25;} // p without a factor of 4 (15/35/85) needs base to carry it, or the answer isn't whole
     else if(lv<=10){p=pick(rng,[3,7,12.5,17,65]);base=(p===12.5)?ri(rng,2,30)*8:ri(rng,2,30)*100;}
     else {p=pick(rng,[2.5,6,13,37,88]);base=(p===2.5)?ri(rng,2,25)*40:ri(rng,3,30)*100;}
-    return q('pct',lv,`${p}% of ${fmt(base)}`,p*base/100,{d:{p,base}});
+    return FROM_D.pct(lv,{p,base});
   },
   sq(rng,lv){
     let n;
     if(lv<=1)n=ri(rng,2,9);
     else if(lv<=2)n=ri(rng,3,12);
     else if(lv<=3)n=ri(rng,11,15);
-    else if(lv<=4){const r=ri(rng,4,13);return q('sq',lv,`&radic;<span style="border-top:2px solid var(--accent);padding:0 4px">${r*r}</span>`,r,{hint:'Which number squared gives this?',d:{r}});}
+    else if(lv<=4)return FROM_D.sq(lv,{r:ri(rng,4,13)});
     else if(lv<=5)n=pick(rng,[15,25,35,45,55]);
     else if(lv<=6)n=ri(rng,13,20);
     else if(lv<=7)n=pick(rng,[65,75,85,95]);
@@ -720,27 +775,25 @@ const GEN={
     else if(lv<=10)n=ri(rng,31,50);
     else if(lv<=11)n=ri(rng,91,109);
     else n=ri(rng,51,99);
-    return q('sq',lv,`${n}<sup style="font-size:.55em;color:var(--accent)">2</sup>`,n*n,{d:{n}});
+    return FROM_D.sq(lv,{n});
   },
   frac(rng,lv){
     const easy=[[1,2],[1,4],[3,4],[1,5],[1,10]], mid=[[2,5],[3,5],[1,8],[3,10],[7,10],[1,20]], hard=[[3,8],[5,8],[7,8],[3,20],[7,20],[9,20],[11,25],[1,40],[13,50]];
     const set=lv<=4?easy:lv<=8?easy.concat(mid):easy.concat(mid,hard);
     const [n,d]=pick(rng,set);
     if(lv%2===0||lv>=9){ // as percent
-      const val=100*n/d;
-      if(Number.isInteger(val))return q('frac',lv,`<span style="color:var(--accent)">${n}/${d}</span> as a percent`,val,{hint:'Answer in %',d:{n,den:d,kind:'pct'}});
+      if(Number.isInteger(100*n/d))return FROM_D.frac(lv,{n,den:d,kind:'pct'});
     }
     const mult=lv<=4?ri(rng,2,12):lv<=8?ri(rng,4,25):ri(rng,8,60);
-    const base=d*mult;
-    return q('frac',lv,`<span style="color:var(--accent)">${n}/${d}</span> of ${fmt(base)}`,n*mult,{d:{n,den:d,mult,base,kind:'of'}});
+    return FROM_D.frac(lv,{n,den:d,mult,base:d*mult,kind:'of'});
   },
   est(rng,lv){
-    let a,b,tol;
-    if(lv<=3){a=ri(rng,21,99);b=ri(rng,3,9);tol=.15;}
-    else if(lv<=6){a=ri(rng,21,99);b=ri(rng,21,99);tol=.10;}
-    else if(lv<=9){a=ri(rng,110,999);b=ri(rng,21,99);tol=.08;}
-    else {a=ri(rng,210,999);b=ri(rng,210,999);tol=.05;}
-    return q('est',lv,`${a} ${OP.times} ${b} &asymp; ?`,a*b,{tol,hint:`Estimate — within ${Math.round(tol*100)}% counts`,d:{a,b}});
+    let a,b;
+    if(lv<=3){a=ri(rng,21,99);b=ri(rng,3,9);}
+    else if(lv<=6){a=ri(rng,21,99);b=ri(rng,21,99);}
+    else if(lv<=9){a=ri(rng,110,999);b=ri(rng,21,99);}
+    else {a=ri(rng,210,999);b=ri(rng,210,999);}
+    return FROM_D.est(lv,{a,b});
   }
 };
 function makeQ(skill,lv,rng){return GEN[skill](rng||Math.random,Math.max(1,Math.min(12,lv)));}
@@ -1432,6 +1485,7 @@ const MODES={
   tf:{name:'True or False',desc:'45 seconds of rapid verdicts on finished equations. Sharpens estimation and error-spotting.',time:45},
   unit:{name:'Unit Test'},
   ltest:{name:'Level Test',len:10},
+  review:{name:'Review',desc:'The exact problems you missed, back on schedule. No XP — just memory.'},
   sat:{name:'SAT-style Section',desc:'10 no-calculator quant questions, 8 minutes. Multiple choice, word problems included.',len:10,time:480},
   gre:{name:'GRE-style Quant',desc:'10 quantitative comparisons, 12 minutes. Quantity A vs B — reasoning over grinding.',len:10,time:720},
   assess:{name:'Rated Assessment',desc:'20 adaptive questions — difficulty climbs while you\'re winning, eases when you miss. Rates what you actually demonstrate.',len:20}
@@ -1622,6 +1676,8 @@ function nextQuestion(){
 function startSession(mode,opts){
   opts=opts||{};
   if(mode==='daily'&&S.daily[todayKey()])return; // one attempt a day
+  let revQ=null;
+  if(mode==='review'){revQ=buildReview(Date.now());if(!revQ.length)return;}
   Voice.stop();
   sess={mode,idx:0,correct:0,wrong:0,times:[],events:[],buf:'',lock:false,queue:null,log:[],
         skillPool:opts.skills||activeSkills(),lives:MODES.survival.lives,started:Date.now(),
@@ -1635,6 +1691,7 @@ function startSession(mode,opts){
     order.forEach(id=>sess.queue.push(makeQ(id,S.skills[id].lv,rng)));
     for(let i=0;i<2;i++){const id=pick(rng,SKILL_IDS);sess.queue.push(makeQ(id,S.skills[id].lv,rng));}
   }
+  if(mode==='review')sess.queue=revQ;
   if(mode==='drill'){
     sess.queue=[];
     for(let i=0;i<5;i++)sess.queue.push(makeQ(opts.skill,opts.lv,Math.random));
@@ -1648,6 +1705,19 @@ function startSession(mode,opts){
   loadQ();
   render();
   startTick();
+}
+function buildReview(now){ // due items rebuilt from their stored operands; an item that can't be rebuilt is let go
+  const qs=[];
+  rqDue(S.rq||[],now).slice(0,RQ_ROUND).forEach(it=>{
+    const qq=rebuildQ(it.s,it.lv,it.d),k=rqKey(it.s,it.d);
+    if(qq){qq.rk=k;qs.push(qq);}else S.rq=S.rq.filter(x=>rqKey(x.s,x.d)!==k);
+  });
+  return qs;
+}
+function noteMiss(mode,q,ok,now){ // true when the queue changed: a review answer reschedules, a fresh miss enqueues
+  if(mode==='review'&&q.rk){S.rq=rqAnswer(S.rq||[],q.rk,ok,now);return true;}
+  if(ok||q.choice||!q.d||!RQ_MODES.includes(mode))return false;
+  S.rq=rqAdd(S.rq||[],{s:q.skill,lv:q.lv,d:q.d},now);return true;
 }
 function holdAfterAnswer(mode,ok,hasNote){ // feedback stays until Next everywhere except the racing modes
   return !['sprint','survival','tf'].includes(mode)&&(!ok||!!hasNote);
@@ -1700,8 +1770,10 @@ function resolveAnswer(val,ok,gaveUp){
   sess.times.push(ms);
   if(ok)sess.correct++;else sess.wrong++;
   const hx={m:sess.mode,d:q.d,g:gaveUp?null:val};
+  const queued=noteMiss(sess.mode,q,ok,Date.now());
   if(['practice','sprint','survival','daily','assess'].includes(sess.mode)){const ev=applyResult(q.skill,ok,ms,q.lv,hx);sess.events.push(...ev);saveState();}
   else if(sess.mode!=='drill'){recordAnswer(q.skill,ok,ms,q.lv,hx);saveState();}
+  else if(queued)saveState();
   if(!ok&&sess.mode==='survival')sess.lives--;
   sess.log.push({q,given:val,ok,ms,gaveUp:gaveUp?1:0});
   if(sess.mode==='assess')sess.adap.off=Math.max(-3,Math.min(8,sess.adap.off+(ok?(ms<6000?1:0):-1)));
@@ -1732,6 +1804,7 @@ function timeoutQ(){ // survival clock ran out
   sess.lock=true;sess.wrong++;sess.lives--;
   const q=sess.q;
   sess.log.push({q,given:null,ok:false,ms:sess.qLimit});
+  noteMiss(sess.mode,q,false,Date.now());
   if(sess.mode!=='drill'&&sess.mode!=='check'){const ev=applyResult(q.skill,false,sess.qLimit,q.lv,{m:sess.mode,d:q.d,g:null});sess.events.push(...ev);saveState();}
   const fb=$('#fbLine');
   if(fb){fb.className='feedback no';fb.textContent=`Time — answer: ${fmt(q.answer)}`;}
@@ -1936,6 +2009,13 @@ function renderProfile(){
   $('#satGo').addEventListener('click',()=>{switchTab('train');startSession('sat');});
   $('#greGo').addEventListener('click',()=>{switchTab('train');startSession('gre');});
 }
+function reviewCardHTML(now){
+  const rq=S.rq||[];if(!rq.length)return '';
+  const due=rqDue(rq,now).length;
+  if(due)return `<div class="card coachbanner"><div><strong>${due} problem${due>1?'s':''} due for review.</strong> The exact ones you missed, back on schedule. Get one right and it returns later each time; miss it and it is back tomorrow. No XP — this is memory work.</div><button class="btn primary" data-mode="review">Review ${Math.min(due,RQ_ROUND)} now</button></div>`;
+  const days=Math.max(1,Math.round((rqNextDue(rq)-dayAfter(now,0))/864e5));
+  return `<p class="sub">Review queue: ${rq.length} missed problem${rq.length>1?'s':''} waiting — the next comes due ${days===1?'tomorrow':'in '+days+' days'}.</p>`;
+}
 function renderTrain(){
   const v=$('#view-train');
   if(sess&&!sess.over){renderQuiz();return;}
@@ -1945,6 +2025,7 @@ function renderTrain(){
   const placedAll=SKILL_IDS.every(id=>lad(id).placed);
   v.innerHTML=`
    ${!placedAll?`<div class="card coachbanner"><div><strong>Coach here.</strong> Before the ladder means anything I need a baseline. Take the 3-minute Skill Check once and every skill starts at its real level — no grinding from level 1.</div><button class="btn primary" data-mode="check">Take the Skill Check</button></div>`:''}
+   ${reviewCardHTML(Date.now())}
    <h2 class="sec">Your ladder</h2>
    <p class="sub">${placedAll?'Learn the technique, practice at your level, then pass a Level Test — 8 of 10 — to unlock the next. Every round you play, arcade included, counts toward readiness.':'Unranked until the Skill Check places you. You can still practice — tests unlock once you’re placed.'}</p>
    <div class="lads">
@@ -2154,6 +2235,7 @@ function roundRecos(d){ // what this round says to study next: lessons behind th
 function coachRoundLine(d,acc,avg){
   const misses=d.log.filter(l=>!l.ok).length;
   const slow=d.log.filter(l=>l.ok&&l.ms>10000).length;
+  if(d.mode==='review')return misses?`${misses} didn't stick yet — ${misses>1?'they come':'it comes'} back tomorrow. Read the note on each, then meet it cold.`:'All of them held. Each one now waits longer before it returns — that spacing is what makes it permanent.';
   if(acc===100&&avg&&avg<4)return 'Flawless and fast. No notes — I\'m raising the bar next round.';
   if(acc===100&&slow)return `Perfect accuracy, but ${slow} answer${slow>1?'s':''} took over 10 seconds. The review below shows the shortcut you were grinding past.`;
   if(acc===100)return 'Clean sheet. When that feels routine, add a skill or try Sprint.';
@@ -2233,6 +2315,7 @@ function renderResults(){
             d.mode==='assess'?`Reckon rating from what you demonstrated · ~${pctile(d.rating,ageMid)}th percentile — ${pctLabel(pctile(d.rating,ageMid))} ${S.profile.age?'for ages '+S.profile.age:'vs typical adults'} (calibrated estimate)`:
             d.mode==='unit'?(d.unitPassed?(d.newUnlock?`Passed — Unit ${d.unit+2} unlocked`:'Passed'):`${acc}% — you need 80%. Review the misses, then retake.`):
             d.mode==='ltest'?(d.ltPassed?(d.ltUnlocked?`Passed — ${SKILLS[d.ltest.skill].name} Level ${d.ltUnlocked} unlocked`:`Passed — Level ${d.ltest.lv} confirmed`):`${d.correct}/10 — the bar is 8. Walk the review, practice the technique, then retake.`):
+            d.mode==='review'?(d.wrong?`${d.wrong} missed — ${d.wrong>1?'those come':'that one comes'} back tomorrow. The rest move further out.`:'All remembered — each one moves further out.'):
             d.newBest?'New personal best':
             d.mode==='daily'?'Daily Ten complete — a fresh seeded ten tomorrow':
             d.mode==='drill'?(d.correct>=4?'Technique drilled — marked as mastered':'Keep at it — 4 of 5 marks it mastered'):
@@ -2259,7 +2342,7 @@ function renderResults(){
        </div></div>`;})()}
     ${d.log.some(l=>!l.ok||l.ms>10000)?'':`<div class="tipcard" style="background:var(--surface2)"><span class="eyebrow" style="color:var(--faint)">Trick of the round</span><p>${tip}</p></div>`}
     <div class="ractions">
-      ${d.mode==='daily'||d.mode==='drill'||(d.mode==='ltest'&&d.ltPassed)?'':`<button class="btn primary" id="againBtn">${d.mode==='unit'?(d.unitPassed?'Retake':'Try again'):d.mode==='ltest'?'Retake the test':'Go again'}</button>`}
+      ${d.mode==='daily'||d.mode==='drill'||(d.mode==='ltest'&&d.ltPassed)||(d.mode==='review'&&!rqDue(S.rq||[],Date.now()).length)?'':`<button class="btn primary" id="againBtn">${d.mode==='review'?'Review the rest':d.mode==='unit'?(d.unitPassed?'Retake':'Try again'):d.mode==='ltest'?'Retake the test':'Go again'}</button>`}
       ${d.mode==='drill'?`<button class="btn primary" id="backLearnBtn">Back to lesson</button>`:''}
       ${d.mode==='unit'?`<button class="btn ghost" id="pathBtn">Back to path</button>`:''}
       ${d.mode==='assess'?`<button class="btn ghost" id="profBtn">See profile</button>`:''}
@@ -2638,7 +2721,7 @@ function seedIdeas(){
     mk('r2',1,'A short celebration moment on level-ups, unit passes, and new personal bests','shipped'),
     mk('r3',1,'Keyboard shortcuts overlay (press ? to see all keys)'),
     mk('r4',1,'One-tap practice presets on Train (e.g. "2-digit multiplication only", "percentages sprint")'),
-    mk('r5',2,'Review queue: spaced repetition on the exact problems you missed, resurfacing them over days'),
+    mk('r5',2,'Review queue: spaced repetition on the exact problems you missed, resurfacing them over days','shipped'),
     mk('r6',2,'Custom drill builder — choose operations, number ranges, and round length'),
     mk('r7',2,'New units: Trachtenberg multiplication, fraction arithmetic, roots and powers'),
     mk('r8',2,'Ghost mode: race your own best Sprint run question-by-question'),
