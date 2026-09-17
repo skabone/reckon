@@ -6,7 +6,7 @@
 <title>Reckon</title>
 <meta name="description" content="Mental math, trained like a sport — a per-skill ladder with placement, level tests, lessons, and an honest coach.">
 <meta name="app-build" content="2026-09-17">
-<meta name="app-build-id" content="2026-09-17.f6b4471">
+<meta name="app-build-id" content="2026-09-17.0a54858">
 <meta name="theme-color" content="#F9F9F6" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#10141D" media="(prefers-color-scheme: dark)">
 <link rel="manifest" href="manifest.webmanifest">
@@ -478,7 +478,7 @@ canvas.confetti{position:fixed;inset:0;pointer-events:none;z-index:98}
 /* ================= storage ================= */
 // S.v stays 1 so an older cached build can still read the store; S.sv is the schema version migrations move.
 const KEY='reckon.v1',SNAP_KEY='reckon.snaps',QUAR_KEY='reckon.quarantine',PREMIG_KEY='reckon.premigrate';
-const BUILD='2026-09-17.f6b4471'; // ship.sh stamps date + content hash here
+const BUILD='2026-09-17.0a54858'; // ship.sh stamps date + content hash here
 const STORE_SV=2,SNAP_MAX=5,QUAR_MAX=3;
 const SKILL_IDS=['add','sub','mul','div','pct','sq','frac','est'];
 const SKILLS={
@@ -2770,6 +2770,7 @@ function adoptState(text,why){
   render();
   return r;
 }
+function inArtifact(){return typeof claude!=='undefined'&&!!claude;}
 function stateSummary(s){
   const lv=SKILL_IDS.reduce((a,id)=>a+s.skills[id].lv,0)/SKILL_IDS.length;
   return `${fmt(s.totals.n)} answers · average level ${lv.toFixed(1)} · ${Object.keys(s.lessons||{}).length} lessons touched`;
@@ -2807,10 +2808,12 @@ function wireDataCard(v){
     if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(txt.value).then(done,()=>fallbackCopy(txt.value,done));
     else fallbackCopy(txt.value,done);};
   $('#expGo').addEventListener('click',()=>{
-    open('This is your whole training record. Copy it, or download it as a file, then use Import progress in the other copy of Reckon.',
-      JSON.stringify(exportBundle(S,Date.now())),[['dataCopy','Copy'],['dataDl','Download file']]);
+    const canDl=!inArtifact(); // the Artifact viewer never lets a page save a file — a download button there would do nothing
+    open(canDl?'This is your whole training record. Copy it, or download it as a file, then use Import progress in the other copy of Reckon.'
+        :'This is your whole training record. Copy it, then use Import progress in the other copy of Reckon and paste it there.',
+      JSON.stringify(exportBundle(S,Date.now())),canDl?[['dataCopy','Copy'],['dataDl','Download file']]:[['dataCopy','Copy']]);
     $('#dataCopy').addEventListener('click',copy);
-    $('#dataDl').addEventListener('click',()=>{
+    if(canDl)$('#dataDl').addEventListener('click',()=>{
       try{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([txt.value],{type:'application/json'}));
         a.download='reckon-progress-'+todayKey()+'.json';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),4000);}
       catch(e){msg.textContent='Download is blocked here — use Copy instead.';}
