@@ -6,6 +6,7 @@
 <title>Reckon</title>
 <meta name="description" content="Mental math, trained like a sport — a per-skill ladder with placement, level tests, lessons, and an honest coach.">
 <meta name="app-build" content="2026-09-17">
+<meta name="app-build-id" content="2026-09-17.f6b4471">
 <meta name="theme-color" content="#F9F9F6" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#10141D" media="(prefers-color-scheme: dark)">
 <link rel="manifest" href="manifest.webmanifest">
@@ -179,6 +180,15 @@ p.sub{color:var(--muted);margin:0 0 14px;font-size:14.5px}
 .skillrow{display:grid;grid-template-columns:150px 1fr 64px;align-items:center;gap:12px;padding:8px 0}
 .skillrow .nm{font-weight:600;font-size:14.5px}
 .skillrow .lv{font-family:"IBM Plex Mono",monospace;font-size:12.5px;color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+.datacard{padding:18px}
+.datacard h3{margin:20px 0 2px;font-size:15px;font-weight:600}
+.datacard .note{font-size:13px;color:var(--muted);margin:0 0 8px}
+.datacard textarea{width:100%;min-height:110px;font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--ink);background:var(--surface2);border:1.5px solid var(--line);border-radius:10px;padding:10px 12px;resize:vertical;word-break:break-all}
+.datacard textarea:focus{outline:none;border-color:var(--accent)}
+.datawarn{font-size:14px;color:var(--ink);background:var(--amber-soft);border-left:3px solid var(--amber);border-radius:8px;padding:10px 12px;margin:10px 0}
+.snap{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 0;border-top:1px solid var(--line);font-size:13.5px}
+.snap .btn{padding:7px 14px;font-size:13.5px}
+.buildnote{margin-top:16px!important}
 .chartcard{padding:18px}
 .chartcard h3{margin:0 0 2px;font-size:15px;font-weight:600}
 .chartcard .note{font-size:12.5px;color:var(--faint);margin:0 0 12px}
@@ -466,31 +476,143 @@ canvas.confetti{position:fixed;inset:0;pointer-events:none;z-index:98}
 <script>
 'use strict';
 /* ================= storage ================= */
-const KEY='reckon.v1';
-function loadState(){
-  try{const raw=localStorage.getItem(KEY); if(raw){const s=JSON.parse(raw); if(s&&s.v===1) return s;}}catch(e){}
-  return null;
-}
-let persistOK=true;
-function saveState(){
-  try{localStorage.setItem(KEY,JSON.stringify(S));}catch(e){persistOK=false;}
-}
+// S.v stays 1 so an older cached build can still read the store; S.sv is the schema version migrations move.
+const KEY='reckon.v1',SNAP_KEY='reckon.snaps',QUAR_KEY='reckon.quarantine',PREMIG_KEY='reckon.premigrate';
+const BUILD='2026-09-17.f6b4471'; // ship.sh stamps date + content hash here
+const STORE_SV=2,SNAP_MAX=5,QUAR_MAX=3;
 const SKILL_IDS=['add','sub','mul','div','pct','sq','frac','est'];
 const SKILLS={
   add:{name:'Addition'}, sub:{name:'Subtraction'}, mul:{name:'Multiplication'}, div:{name:'Division'},
   pct:{name:'Percentages'}, sq:{name:'Squares'}, frac:{name:'Fractions'}, est:{name:'Estimation'}
 };
-function freshState(){
+function freshState(tk){
   const sk={}; SKILL_IDS.forEach(id=>sk[id]={lv:1,xp:0});
-  return {v:1,skills:sk,hist:[],days:{},streak:{last:'',n:0},bestSprint:0,bestSurvival:0,
+  return {v:1,sv:STORE_SV,skills:sk,hist:[],agg:{},days:{},streak:{last:'',n:0},bestSprint:0,bestSurvival:0,
           daily:{},lessons:{},totals:{n:0,ok:0},sel:SKILL_IDS.slice(),lastCheck:'',
-          units:{},tests:{},rhist:[],profile:{name:'',age:'',occ:'',created:todayKey()}};
+          units:{},tests:{},rhist:[],ladder:{},study:{},profile:{name:'',age:'',occ:'',created:tk||todayKey()}};
 }
-const S=loadState()||freshState();
-Object.keys(S.lessons||{}).forEach(k=>{if(S.lessons[k]===true)S.lessons[k]={c:1,m:1};});
-S.units=S.units||{};S.tests=S.tests||{};S.rhist=S.rhist||[];
-S.ladder=S.ladder||{};S.study=S.study||{};
-S.profile=S.profile||{name:'',age:'',occ:'',created:todayKey()};
+// daily aggregates outlive the 1000-row history cap: per day n/ok/ms, per skill [n,ok], per mode n
+function aggAdd(agg,day,h){
+  const a=agg[day]||(agg[day]={n:0,ok:0,ms:0,s:{}});
+  a.n++;a.ok+=h.ok?1:0;a.ms+=h.ms||0;
+  const k=a.s[h.s]||(a.s[h.s]=[0,0]);k[0]++;k[1]+=h.ok?1:0;
+  if(h.m){a.m=a.m||{};a.m[h.m]=(a.m[h.m]||0)+1;}
+}
+// MIGRATIONS[n] takes schema n to n+1. Pure: each works on the copy migrate() hands it.
+const MIGRATIONS=[
+  (s,tk)=>{ // 0 → 1: what earlier builds patched in ad hoc after load
+    s.lessons=s.lessons||{};
+    Object.keys(s.lessons).forEach(k=>{if(s.lessons[k]===true)s.lessons[k]={c:1,m:1};});
+    s.units=s.units||{};s.tests=s.tests||{};s.rhist=s.rhist||[];s.ladder=s.ladder||{};s.study=s.study||{};
+    s.profile=s.profile||{name:'',age:'',occ:'',created:tk};
+    return s;},
+  s=>{ // 1 → 2: daily aggregates, backfilled from the history that survives
+    s.agg={};(s.hist||[]).forEach(h=>aggAdd(s.agg,dayKey(new Date(h.t)),h));
+    return s;}
+];
+function migrate(s,tk){
+  s=JSON.parse(JSON.stringify(s));
+  for(let v=s.sv||0;v<STORE_SV;v++){s=MIGRATIONS[v](s,tk||todayKey());s.sv=v+1;}
+  return s;
+}
+function validateState(s){
+  const er=[],obj=x=>!!x&&typeof x==='object'&&!Array.isArray(x),num=x=>typeof x==='number'&&Number.isFinite(x);
+  if(!obj(s))return ['not an object'];
+  if(s.v!==1)er.push('v is not 1');
+  if(!Number.isInteger(s.sv)||s.sv<0||s.sv>STORE_SV)er.push('schema version '+s.sv+' is not one this build knows');
+  if(!obj(s.skills))er.push('skills missing');
+  else SKILL_IDS.forEach(id=>{const k=s.skills[id];
+    if(!obj(k)||!Number.isInteger(k.lv)||k.lv<1||k.lv>12||!num(k.xp))er.push('skill '+id+' invalid');});
+  if(!Array.isArray(s.hist))er.push('hist missing');
+  else if(s.hist.some(h=>!obj(h)||!num(h.t)||typeof h.s!=='string'||!num(h.ms)||(h.ok!==0&&h.ok!==1)))er.push('hist has a malformed row');
+  if(!obj(s.totals)||!num(s.totals.n)||!num(s.totals.ok)||s.totals.ok>s.totals.n)er.push('totals invalid');
+  if(!obj(s.streak)||typeof s.streak.last!=='string'||!num(s.streak.n))er.push('streak invalid');
+  ['days','daily','lessons','units','tests','ladder','study','agg','profile'].forEach(k=>{if(s[k]!==undefined&&!obj(s[k]))er.push(k+' is not an object');});
+  ['rhist','sel'].forEach(k=>{if(s[k]!==undefined&&!Array.isArray(s[k]))er.push(k+' is not a list');});
+  return er;
+}
+function readList(st,key){try{const a=JSON.parse(st.getItem(key)||'[]');return Array.isArray(a)?a:[];}catch(e){return [];}}
+function quarantine(st,raw,why,now){ // true once the raw text is safely parked
+  const list=readList(st,QUAR_KEY);
+  if(list.length&&list[list.length-1].raw===raw)return true;
+  list.push({t:now,why,raw});
+  try{st.setItem(QUAR_KEY,JSON.stringify(list.slice(-QUAR_MAX)));return true;}catch(e){return false;}
+}
+// Opens the store without ever destroying what it finds: unreadable → quarantined first; written by a newer
+// build → left alone, read-only; older schema → raw copy kept before migrating. readOnly means saveState won't write.
+function openStore(st,now){
+  const out={state:null,status:'fresh',readOnly:false};
+  let raw=null;
+  try{raw=st.getItem(KEY);}catch(e){out.status='blocked';return out;}
+  if(raw==null||raw==='')return out;
+  let s=null;try{s=JSON.parse(raw);}catch(e){}
+  const isObj=!!s&&typeof s==='object'&&!Array.isArray(s);
+  if(isObj&&((typeof s.v==='number'&&s.v>1)||(s.v===1&&s.sv>STORE_SV))){out.status='future';out.readOnly=true;return out;}
+  let next=null,why='not valid JSON';
+  if(isObj){
+    try{next=migrate(s,dayKey(new Date(now)));const er=validateState(next);if(er.length){why=er.join('; ');next=null;}}
+    catch(e){why='migration failed: '+e.message;next=null;}
+  }
+  if(!next){out.status='quarantined';out.why=why;out.readOnly=!quarantine(st,raw,why,now);return out;}
+  if((s.sv||0)<STORE_SV){
+    out.status='migrated';
+    try{st.setItem(PREMIG_KEY,JSON.stringify({t:now,from:s.sv||0,raw}));}catch(e){out.readOnly=true;}
+  }else out.status='ok';
+  out.state=next;
+  return out;
+}
+function rollSnaps(snaps,snap,max){return snaps.concat([snap]).slice(-max);}
+function writeSnaps(st,snaps){ // under quota pressure the oldest snapshots go first; the live store matters more
+  snaps=snaps.slice();
+  for(;;){
+    try{st.setItem(SNAP_KEY,JSON.stringify(snaps));return snaps;}
+    catch(e){if(snaps.length<=1)return null;snaps.shift();} // the new one alone doesn't fit: leave what is stored
+  }
+}
+function takeSnap(st,state,why,now){
+  const snap={t:now,day:dayKey(new Date(now)),why,n:state.totals.n,json:JSON.stringify(state)};
+  return writeSnaps(st,rollSnaps(readList(st,SNAP_KEY),snap,SNAP_MAX));
+}
+function hashStr(str){let h=2166136261;for(let i=0;i<str.length;i++){h^=str.charCodeAt(i);h=Math.imul(h,16777619);}return (h>>>0).toString(16).padStart(8,'0');}
+function exportBundle(state,now){
+  state=JSON.parse(JSON.stringify(state));
+  return {app:'reckon',kind:'progress',sv:state.sv,build:BUILD,exported:new Date(now).toISOString(),check:hashStr(JSON.stringify(state)),state};
+}
+// Accepts an export bundle, or a bare state (a snapshot or a quarantined store that still parses).
+function importBundle(text,tk){
+  let b=null;try{b=JSON.parse(text);}catch(e){return {ok:false,errors:['That is not valid JSON — paste the whole export.']};}
+  if(!b||typeof b!=='object')return {ok:false,errors:['That is not a Reckon export.']};
+  let st=b;
+  if(b.app!==undefined||b.state!==undefined){
+    if(b.app!=='reckon'||b.kind!=='progress'||!b.state)return {ok:false,errors:['That is not a Reckon progress export.']};
+    if(b.check!==hashStr(JSON.stringify(b.state)))return {ok:false,errors:['The export is damaged or was edited — its checksum does not match.']};
+    st=b.state;
+  }
+  if(st.sv>STORE_SV||(typeof st.v==='number'&&st.v>1))return {ok:false,errors:['That export comes from a newer Reckon build — update this copy first.']};
+  let next;try{next=migrate(st,tk);}catch(e){return {ok:false,errors:['Could not read that export: '+e.message]};}
+  const er=validateState(next);
+  return er.length?{ok:false,errors:er}:{ok:true,state:next,exported:b.exported||'',build:b.build||''};
+}
+const STORE=openStore(localStorage,Date.now());
+const S=STORE.state||freshState();
+let persistOK=STORE.status!=='blocked';
+function saveState(){
+  if(STORE.readOnly)return;
+  const json=JSON.stringify(S);
+  try{localStorage.setItem(KEY,json);persistOK=true;}
+  catch(e){ // make room by dropping the oldest snapshot, then try once more
+    const snaps=readList(localStorage,SNAP_KEY);
+    try{if(!snaps.length)throw e;localStorage.setItem(SNAP_KEY,JSON.stringify(snaps.slice(1)));localStorage.setItem(KEY,json);persistOK=true;}
+    catch(e2){persistOK=false;}
+  }
+}
+function replaceState(next){Object.keys(S).forEach(k=>delete S[k]);Object.assign(S,next);}
+// one rolling snapshot per day, taken at load from the state as it was found
+if(STORE.state&&!STORE.readOnly&&S.totals.n>0){
+  const snaps=readList(localStorage,SNAP_KEY),tk=todayKey();
+  if(!snaps.some(x=>x.day===tk&&x.why==='daily'))takeSnap(localStorage,S,'daily',Date.now());
+}
+if(STORE.status==='migrated')saveState();
 /* ================= helpers ================= */
 const $=s=>document.querySelector(s);
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -663,7 +785,7 @@ function applyLevelTest(skill,lv,correct){ // pass 8/10 at your frontier level �
   return {passed,unlocked};
 }
 /* ================= progression ================= */
-function applyResult(skill,ok,ms,lv){
+function applyResult(skill,ok,ms,lv,x){
   const sk=S.skills[skill]; const ev=[];
   if(ok){
     let g=10+(ms<3000?8:ms<6000?4:0);
@@ -673,14 +795,18 @@ function applyResult(skill,ok,ms,lv){
     sk.xp-=14;
     if(sk.xp<0){ if(sk.lv>1){sk.lv--;sk.xp=60;ev.push({skill,dir:-1,lv:sk.lv});} else sk.xp=0; }
   }
-  recordAnswer(skill,ok,ms,lv);
+  recordAnswer(skill,ok,ms,lv,x);
   return ev;
 }
-function recordAnswer(skill,ok,ms,lv){
+// x = {m: mode, d: operands, g: given answer (null = gave up / timed out)} — history rows v2
+function recordAnswer(skill,ok,ms,lv,x){
   S.totals.n++; if(ok)S.totals.ok++;
-  S.hist.push({t:Date.now(),s:skill,ok:ok?1:0,ms:Math.min(ms,60000),lv:lv||S.skills[skill].lv});
+  const row={t:Date.now(),s:skill,ok:ok?1:0,ms:Math.min(ms,60000),lv:lv||S.skills[skill].lv};
+  if(x){if(x.m)row.m=x.m;if(x.d)row.d=x.d;if(x.g!==undefined)row.g=typeof x.g==='number'&&Number.isFinite(x.g)?x.g:null;}
+  S.hist.push(row);
   if(S.hist.length>1200)S.hist=S.hist.slice(-1000);
   const tk=todayKey();
+  S.agg=S.agg||{};aggAdd(S.agg,tk,row);
   S.days[tk]=(S.days[tk]||0)+1;
   if(S.streak.last!==tk){
     S.streak.n=(S.streak.last===prevDayKey(tk))?S.streak.n+1:1;
@@ -1573,8 +1699,9 @@ function resolveAnswer(val,ok,gaveUp){
   sess.lock=true;
   sess.times.push(ms);
   if(ok)sess.correct++;else sess.wrong++;
-  if(['practice','sprint','survival','daily','assess'].includes(sess.mode)){const ev=applyResult(q.skill,ok,ms,q.lv);sess.events.push(...ev);saveState();}
-  else if(sess.mode!=='drill'){recordAnswer(q.skill,ok,ms,q.lv);saveState();}
+  const hx={m:sess.mode,d:q.d,g:gaveUp?null:val};
+  if(['practice','sprint','survival','daily','assess'].includes(sess.mode)){const ev=applyResult(q.skill,ok,ms,q.lv,hx);sess.events.push(...ev);saveState();}
+  else if(sess.mode!=='drill'){recordAnswer(q.skill,ok,ms,q.lv,hx);saveState();}
   if(!ok&&sess.mode==='survival')sess.lives--;
   sess.log.push({q,given:val,ok,ms,gaveUp:gaveUp?1:0});
   if(sess.mode==='assess')sess.adap.off=Math.max(-3,Math.min(8,sess.adap.off+(ok?(ms<6000?1:0):-1)));
@@ -1605,7 +1732,7 @@ function timeoutQ(){ // survival clock ran out
   sess.lock=true;sess.wrong++;sess.lives--;
   const q=sess.q;
   sess.log.push({q,given:null,ok:false,ms:sess.qLimit});
-  if(sess.mode!=='drill'&&sess.mode!=='check'){const ev=applyResult(q.skill,false,sess.qLimit,q.lv);sess.events.push(...ev);saveState();}
+  if(sess.mode!=='drill'&&sess.mode!=='check'){const ev=applyResult(q.skill,false,sess.qLimit,q.lv,{m:sess.mode,d:q.d,g:null});sess.events.push(...ev);saveState();}
   const fb=$('#fbLine');
   if(fb){fb.className='feedback no';fb.textContent=`Time — answer: ${fmt(q.answer)}`;}
   setTimeout(()=>{if(!sess)return;
@@ -1799,7 +1926,9 @@ function renderProfile(){
     <div class="card tile"><div class="v">${acc}<small>%</small></div><div class="k">Accuracy</div></div>
     <div class="card tile"><div class="v">${mastered}<small>/${LESSONS.length}</small></div><div class="k">Techniques mastered</div></div>
     <div class="card tile"><div class="v">${streakNow()}<small> ${streakNow()===1?'day':'days'}</small></div><div class="k">Streak</div></div>
-   </div>`;
+   </div>
+   ${dataCardHTML()}`;
+  wireDataCard(v);
   $('#nickIn').addEventListener('change',e=>{S.profile.name=e.target.value.trim();saveState();renderProfile();});
   $('#ageSel').addEventListener('change',e=>{S.profile.age=e.target.value;saveState();renderProfile();});
   $('#occSel').addEventListener('change',e=>{S.profile.occ=e.target.value==='Prefer not to say'?'':e.target.value;saveState();});
@@ -1868,7 +1997,7 @@ function renderTrain(){
    <div class="skillpick">
     ${SKILL_IDS.map(id=>`<button class="spill" data-skill="${id}" aria-pressed="${sel.includes(id)}">${SKILLS[id].name} · L${S.skills[id].lv}</button>`).join('')}
    </div>
-   ${persistOK?'':'<p class="sub">Heads up: this browser is blocking storage, so progress lasts only for this visit.</p>'}`;
+   ${storeNotice()?`<p class="sub datawarn">${esc(storeNotice())}</p>`:''}`;
   v.querySelectorAll('[data-mode]').forEach(b=>b.addEventListener('click',()=>startSession(b.dataset.mode)));
   v.querySelectorAll('[data-learn]').forEach(b=>b.addEventListener('click',()=>{ui.lesson=b.dataset.learn;switchTab('learn');}));
   v.querySelectorAll('[data-prax]').forEach(b=>b.addEventListener('click',()=>startSession('practice',{skills:[b.dataset.prax]})));
@@ -1934,7 +2063,7 @@ function submitChoice(idx){
   const q=sess.q,ms=Date.now()-sess.qStart,ok=idx===q.correct,gaveUp=idx<0;
   sess.lock=true;sess.times.push(ms);
   if(ok)sess.correct++;else sess.wrong++;
-  recordAnswer(q.skill,ok,ms,q.lv);saveState();
+  recordAnswer(q.skill,ok,ms,q.lv,{m:sess.mode,d:q.d,g:gaveUp?null:idx});saveState();
   sess.log.push({q,given:gaveUp?null:idx,ok,ms,gaveUp:gaveUp?1:0});
   SFX.play(ok?'ok':'no');
   const box=$('#choiceBox');
@@ -2618,6 +2747,103 @@ function renderIdeas(){
   v.querySelectorAll('[data-del]').forEach(b=>b.addEventListener('click',()=>{
     IDEAS.items=IDEAS.items.filter(i=>i.id!==b.dataset.del);
     ideasSave();renderIdeas();
+  }));
+}
+/* ================= your data: export, import, snapshots ================= */
+function storeNotice(){
+  if(STORE.status==='future')return 'This progress was saved by a newer Reckon build. This copy left it untouched and will not save during this visit — reload to update.';
+  if(STORE.status==='quarantined')return STORE.readOnly
+    ?'Your saved progress could not be read, and there was no room to set a copy aside — so nothing is being saved this visit and the original is untouched.'
+    :'Your saved progress could not be read, so it was set aside untouched instead of being overwritten. Restore a snapshot on Profile, or copy the set-aside data from there.';
+  if(STORE.readOnly)return 'Storage is full: Reckon could not back up your progress before updating it, so nothing is being saved this visit and the original is untouched.';
+  if(!persistOK)return 'Heads up: this browser is blocking storage or it is full, so progress lasts only for this visit.';
+  return '';
+}
+// Replaces the whole state with an export / snapshot / set-aside store, after snapshotting what is here now.
+function adoptState(text,why){
+  if(STORE.readOnly)return {ok:false,errors:['This visit is read-only, so nothing can be replaced. '+storeNotice()]};
+  const r=importBundle(text);
+  if(!r.ok)return r;
+  if(S.totals.n>0&&!takeSnap(localStorage,S,why,Date.now()))return {ok:false,errors:['Could not snapshot your current progress first (storage is full), so nothing was replaced.']};
+  replaceState(r.state);saveState();
+  Voice.on=Voice.ready&&!!S.voiceOn;SFX.on=S.sfxOn!==false;renderVoiceBtn();renderSfxBtn();
+  render();
+  return r;
+}
+function stateSummary(s){
+  const lv=SKILL_IDS.reduce((a,id)=>a+s.skills[id].lv,0)/SKILL_IDS.length;
+  return `${fmt(s.totals.n)} answers · average level ${lv.toFixed(1)} · ${Object.keys(s.lessons||{}).length} lessons touched`;
+}
+function dataCardHTML(){
+  const snaps=readList(localStorage,SNAP_KEY).slice().reverse(),quar=readList(localStorage,QUAR_KEY),note=storeNotice();
+  return `<h2 class="sec">Your data</h2>
+   <div class="card datacard">
+    <p class="note">Progress lives in this browser only. The website/app and the Claude Artifact each keep their own — export from one and import into the other to move it.</p>
+    ${note?`<p class="datawarn">${esc(note)}</p>`:''}
+    <div class="ractions" style="justify-content:flex-start;margin-top:12px">
+      <button class="btn ghost" id="expGo">Export progress</button>
+      <button class="btn ghost" id="impGo">Import progress</button>
+      ${quar.length?'<button class="btn ghost" id="quarGo">Show set-aside data</button>':''}
+    </div>
+    <div id="dataBox" class="hide">
+      <p class="note" id="dataHelp"></p>
+      <textarea id="dataTxt" spellcheck="false" aria-label="Progress data"></textarea>
+      <p class="note" id="dataMsg" role="status"></p>
+      <div class="ractions" style="justify-content:flex-start;margin-top:10px" id="dataActs"></div>
+      <input type="file" id="impFile" accept=".json,application/json" class="hide">
+    </div>
+    <h3>Snapshots</h3>
+    ${snaps.length?`<p class="note">Kept automatically: one a day plus one before every import or restore, newest ${SNAP_MAX}.</p>
+     <div class="snaps">${snaps.map((x,i)=>`<div class="snap"><span>${esc(new Date(x.t).toLocaleString())} · ${esc(x.why)} · ${fmt(x.n)} answers</span><button class="btn ghost" data-snap="${snaps.length-1-i}">Restore</button></div>`).join('')}</div>`
+     :'<p class="note">None yet — the first is taken the next time you open Reckon with some answers on the board.</p>'}
+    <p class="note buildnote">Reckon · build ${esc(BUILD)} · store schema ${STORE_SV}</p>
+   </div>`;
+}
+function wireDataCard(v){
+  const box=$('#dataBox'),txt=$('#dataTxt'),msg=$('#dataMsg'),help=$('#dataHelp'),acts=$('#dataActs');
+  const open=(h,val,btns)=>{box.classList.remove('hide');help.textContent=h;txt.value=val;msg.textContent='';
+    acts.innerHTML=btns.map(b=>`<button class="btn ${b[2]||'ghost'}" id="${b[0]}">${b[1]}</button>`).join('');};
+  const copy=()=>{const done=()=>toast('Copied');
+    if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(txt.value).then(done,()=>fallbackCopy(txt.value,done));
+    else fallbackCopy(txt.value,done);};
+  $('#expGo').addEventListener('click',()=>{
+    open('This is your whole training record. Copy it, or download it as a file, then use Import progress in the other copy of Reckon.',
+      JSON.stringify(exportBundle(S,Date.now())),[['dataCopy','Copy'],['dataDl','Download file']]);
+    $('#dataCopy').addEventListener('click',copy);
+    $('#dataDl').addEventListener('click',()=>{
+      try{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([txt.value],{type:'application/json'}));
+        a.download='reckon-progress-'+todayKey()+'.json';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),4000);}
+      catch(e){msg.textContent='Download is blocked here — use Copy instead.';}
+    });
+  });
+  $('#impGo').addEventListener('click',()=>{
+    open('Paste a Reckon export below, or choose the exported file. Importing replaces the progress in this browser; what is here now is snapshotted first.',
+      '',[['impPick','Choose file'],['impCheck','Check it','primary']]);
+    let armed=false;
+    $('#impPick').addEventListener('click',()=>$('#impFile').click());
+    $('#impFile').addEventListener('change',e=>{const f=e.target.files&&e.target.files[0];if(!f)return;
+      const rd=new FileReader();rd.onload=()=>{txt.value=String(rd.result||'');armed=false;$('#impCheck').textContent='Check it';};rd.readAsText(f);});
+    txt.addEventListener('input',()=>{armed=false;$('#impCheck').textContent='Check it';});
+    $('#impCheck').addEventListener('click',()=>{
+      if(!armed){const r=STORE.readOnly?adoptState(txt.value):importBundle(txt.value);
+        if(!r.ok){msg.textContent=r.errors.join(' ');return;}
+        msg.textContent=`Valid: ${stateSummary(r.state)}${r.exported?' · exported '+new Date(r.exported).toLocaleString():''}. It will replace ${fmt(S.totals.n)} answers here.`;
+        armed=true;$('#impCheck').textContent='Replace my progress';return;}
+      const r=adoptState(txt.value,'before import');
+      if(!r.ok){msg.textContent=r.errors.join(' ');return;}
+      toast('Progress imported');
+    });
+  });
+  const qb=$('#quarGo');
+  if(qb)qb.addEventListener('click',()=>{const q=readList(localStorage,QUAR_KEY),last=q[q.length-1];
+    open(`Set aside ${new Date(last.t).toLocaleString()} because: ${last.why}. This is the raw data, untouched — copy it somewhere safe. If it can be repaired into valid JSON, Import progress will take it.`,
+      last.raw,[['dataCopy','Copy']]);
+    $('#dataCopy').addEventListener('click',copy);});
+  v.querySelectorAll('[data-snap]').forEach(b=>b.addEventListener('click',()=>{
+    if(!b.dataset.armed){b.dataset.armed='1';b.textContent='Confirm restore';return;}
+    const x=readList(localStorage,SNAP_KEY)[+b.dataset.snap];
+    const r=x?adoptState(x.json,'before restore'):{ok:false,errors:['That snapshot is gone.']};
+    if(r.ok)toast('Snapshot restored');else{b.textContent='Restore';delete b.dataset.armed;toast(r.errors[0]);}
   }));
 }
 /* ================= boot ================= */
